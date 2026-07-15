@@ -1,0 +1,90 @@
+name: Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_task:
+        description: 'Starting task index (0-based, blank = from state)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-0 libdbus-glib-1-2 libasound2t64 \
+            libxt6 libxtst6 libnss3 libatk1.0-0 \
+            libatk-bridge2.0-0 libxss1 libgtk-3-0
+
+      - name: Cache browser binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          camoufox fetch
+
+      - name: Run
+        env:
+          FORM_URL:        ${{ vars.FORM_URL }}
+          TASKS_B64:       ${{ secrets.TASKS_B64 }}
+          IMAP_USER:       ${{ secrets.IMAP_USER }}
+          IMAP_PASS:       ${{ secrets.IMAP_PASS }}
+          PROXY_TEMPLATE:  ${{ secrets.PROXY_TEMPLATE }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          START_TASK:      ${{ inputs.start_task }}
+        run: python runner.py
+
+      - name: Save state
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.txt offset.txt || true
+          git diff --staged --quiet || git commit -m "update state"
+          git push
+
+      - name: Notify
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          STATUS: ${{ job.status }}
+          STATE: ${{ vars.STATE_OVERRIDE }}
+        run: |
+          COLOR="65280"
+          TITLE="Completed"
+          if [ "$STATUS" != "success" ]; then
+            COLOR="16711680"
+            TITLE="Failed"
+          fi
+          STATE_NUM=$(cat state.txt 2>/dev/null || echo "?")
+          curl -s -X POST "$WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"$TITLE\",
+                \"color\": $COLOR,
+                \"fields\": [
+                  {\"name\": \"Status\", \"value\": \"$STATUS\", \"inline\": true},
+                  {\"name\": \"Task\", \"value\": \"$STATE_NUM\", \"inline\": true},
+                  {\"name\": \"Run\", \"value\": \"[Link]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)\"}
+                ]
+              }]
+            }"

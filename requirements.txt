@@ -1,0 +1,1 @@
+cloverlabs-camoufox[geoip]>=0.6.0
